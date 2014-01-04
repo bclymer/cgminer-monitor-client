@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -28,13 +29,14 @@ type Config struct {
 	ServerPort     string        `json:"serverPort"`
 	MinerHost      string        `json:"minerHost"`
 	MinerPort      string        `json:"minerPort"`
+	DeviceName     string        `json:"deviceName"`
 }
 
-type DeviceStats struct {
-	Status []struct {
-		Description string `json:"Description"`
-		Status      string `json:"STATUS"`
-		When        uint64 `json:"When"`
+type CgMinerStats struct {
+	DeviceName string `json:"deviceName"`
+	When       int64  `json:"when"`
+	Status     []struct {
+		When int64 `json:"When"`
 	} `json:"STATUS"`
 	Devs []struct {
 		GPU               int     `json:"GPU"`
@@ -77,16 +79,18 @@ var (
 func main() {
 	loadConfig()
 	os.Mkdir("./stats", 7777)
-	go monitorFsForStats()
-	go uploadStat()
+	go uploadStatsOnFs()
+	go uploadStatQueue()
 	for {
 		time.Sleep(config.ParsedInterval * time.Second)
+		//var i int
+		//_, err := fmt.Scanf("%d", &i)
 
 		response, err := queryMiner("devs", "")
 		if err != nil {
 			continue
 		}
-		var devs DeviceStats
+		var devs CgMinerStats
 		err = json.Unmarshal([]byte(response), &devs)
 		if err != nil {
 			fmt.Println("Parse Error:", err)
@@ -94,7 +98,7 @@ func main() {
 		} else {
 			//fmt.Println("Response:", strings.TrimRight(string(response), "\x00"))
 		}
-		go writeDeviceStats(devs)
+		go writeCgMinerStats(devs)
 	}
 }
 
@@ -143,36 +147,35 @@ func loadConfig() {
 	fmt.Println("Querying every", config.Interval, "seconds")
 }
 
-func writeDeviceStats(devStats DeviceStats) {
-	stats, err := json.Marshal(devStats)
+func writeCgMinerStats(minerStats CgMinerStats) {
+	minerStats.DeviceName = config.DeviceName
+	minerStats.When = minerStats.Status[0].When
+	stats, err := json.Marshal(minerStats)
 	if err != nil {
-		fmt.Println("Failed marshaling devStats", err)
+		fmt.Println("Failed marshaling minerStats", err)
 		return
 	}
-	err = ioutil.WriteFile("stats/"+strconv.FormatUint(devStats.Status[0].When, 10), stats, 0644)
+	err = ioutil.WriteFile("stats/"+config.DeviceName+"_"+strconv.FormatInt(minerStats.When, 10), stats, 0644)
 	if err != nil {
 		fmt.Println("Failed writing the file", err)
 		return
 	}
+	uploadStatsOnFs()
 }
 
-func monitorFsForStats() {
-	for {
-		time.Sleep(config.ParsedInterval * time.Second)
-		fmt.Println("Scanning for files to upload")
-		files, err := ioutil.ReadDir("./stats/")
-		if err != nil {
-			fmt.Println("Failed reading ./stats/ dir", err)
-			continue
-		}
-		fmt.Println("Found", len(files), "files to upload")
-		for _, file := range files {
-			uploadQueue <- file
-		}
+func uploadStatsOnFs() {
+	fmt.Println("Scanning for files to upload")
+	files, err := ioutil.ReadDir("./stats/")
+	if err != nil {
+		fmt.Println("Failed reading ./stats/ dir", err)
+	}
+	fmt.Println("Found", len(files), "files to upload")
+	for _, file := range files {
+		uploadQueue <- file
 	}
 }
 
-func uploadStat() {
+func uploadStatQueue() {
 	for {
 		select {
 		case file := <-uploadQueue:
@@ -184,7 +187,7 @@ func uploadStat() {
 				if err != nil {
 					fmt.Println("Failed deleting", file.Name(), err)
 				} else {
-					fmt.Println("Deleted", file.Name())
+					fmt.Println("Deleted", file.Name(), "after successful upload")
 				}
 			}
 			break
@@ -211,9 +214,9 @@ func postStatFile(file os.FileInfo) error {
 			return err
 		}
 		resp.Body.Close()
-		fmt.Println(resp.StatusCode)
-		fmt.Println(resp.Header)
-		fmt.Println(body)
+		if resp.StatusCode != 201 {
+			return errors.New("Status code returned was: " + strconv.Itoa(resp.StatusCode))
+		}
 	}
 	return nil
 }
