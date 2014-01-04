@@ -30,6 +30,7 @@ type Config struct {
 	MinerHost      string        `json:"minerHost"`
 	MinerPort      string        `json:"minerPort"`
 	DeviceName     string        `json:"deviceName"`
+	ServerPassword string        `json:"serverPassword"`
 }
 
 type CgMinerStats struct {
@@ -250,5 +251,6 @@ func newfileUploadRequest(uri string, params map[string]string, paramName, path 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Server-Password", config.ServerPassword)
 	return req, nil
 }
