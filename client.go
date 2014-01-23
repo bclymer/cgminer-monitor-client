@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,17 +59,17 @@ type CgMinerStats struct {
 		HardwareErrors    int     `json:"Hardware Errors"`
 		Utility           float64 `json:"Utility"`
 		Intensity         string  `json:"Intensity"`
-		LastSharePool     uint64  `json:"Last Share Pool"`
-		LastShareTime     uint64  `json:"Last Share Time"`
+		LastSharePool     int64   `json:"Last Share Pool"`
+		LastShareTime     int64   `json:"Last Share Time"`
 		TotalMh           float64 `json:"Total MH"`
-		DiffOneWork       uint64  `json:"Diff1 Work"`
+		DiffOneWork       int64   `json:"Diff1 Work"`
 		DiffAccepted      float64 `json:"Difficulty Accepted"`
 		DiffRejected      float64 `json:"Difficulty Rejected"`
 		LastShareDiff     float64 `json:"Last Share Difficulty"`
-		LastValidWorkd    uint64  `json:"Last Valid Work"`
+		LastValidWorkd    int64   `json:"Last Valid Work"`
 		DeviceHardwarePct float64 `json:"Device Hardware%"`
 		DeviceRejectedPct float64 `json:"Device Rejected%"`
-		DeviceElapsed     uint64  `json:"Device Elapsed"`
+		DeviceElapsed     int64   `json:"Device Elapsed"`
 	} `json:"DEVS"`
 }
 
@@ -83,7 +84,6 @@ func main() {
 	go uploadStatsOnFs()
 	go uploadStatQueue()
 	for {
-		time.Sleep(config.ParsedInterval * time.Second)
 		//var i int
 		//_, err := fmt.Scanf("%d", &i)
 
@@ -99,7 +99,9 @@ func main() {
 		} else {
 			//fmt.Println("Response:", strings.TrimRight(string(response), "\x00"))
 		}
+		//go uploadStat(devs)
 		go writeCgMinerStats(devs)
+		time.Sleep(config.ParsedInterval * time.Second)
 	}
 }
 
@@ -156,12 +158,31 @@ func writeCgMinerStats(minerStats CgMinerStats) {
 		fmt.Println("Failed marshaling minerStats", err)
 		return
 	}
-	err = ioutil.WriteFile("stats/"+config.DeviceName+"_"+strconv.FormatInt(minerStats.When, 10), stats, 0644)
+	err = ioutil.WriteFile("stats/"+getStatsName(minerStats), stats, 0644)
 	if err != nil {
 		fmt.Println("Failed writing the file", err)
 		return
 	}
 	uploadStatsOnFs()
+}
+
+func getStatsName(stats CgMinerStats) string {
+	return config.DeviceName + "_" + strconv.FormatInt(stats.When, 10)
+}
+
+func uploadStat(devs CgMinerStats) {
+	content, err := json.Marshal(devs)
+	if err != nil {
+		fmt.Println("F, no idea:", err)
+		return
+	}
+	err = postStatString(content, getStatsName(devs))
+	if err != nil {
+		fmt.Println("Couldn't upload without write:", err)
+		writeCgMinerStats(devs)
+	} else {
+		fmt.Println("Uploaded without writing to disk. Yay")
+	}
 }
 
 func uploadStatsOnFs() {
@@ -204,6 +225,21 @@ func postStatFile(file os.FileInfo) error {
 	if err != nil {
 		return err
 	}
+	return postRequest(request)
+}
+
+func postStatString(body []byte, fileName string) error {
+	extraParams := map[string]string{
+		"name": fileName,
+	}
+	request, err := newStringBodyRequest("http://"+config.ServerHost+":"+config.ServerPort+"/stats", extraParams, "file", body)
+	if err != nil {
+		return err
+	}
+	return postRequest(request)
+}
+
+func postRequest(request *http.Request) error {
 	client := &http.Client{}
 	resp, err := client.Do(request)
 	if err != nil {
@@ -216,6 +252,7 @@ func postStatFile(file os.FileInfo) error {
 		}
 		resp.Body.Close()
 		if resp.StatusCode != 201 {
+			fmt.Println("Server said:", body.String())
 			return errors.New("Status code returned was: " + strconv.Itoa(resp.StatusCode))
 		}
 	}
@@ -253,4 +290,25 @@ func newfileUploadRequest(uri string, params map[string]string, paramName, path 
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Server-Password", config.ServerPassword)
 	return req, nil
+}
+
+// Creates a new file upload http request with optional extra params
+func newStringBodyRequest(uri string, params map[string]string, paramName string, body []byte) (*http.Request, error) {
+	req, err := http.NewRequest("POST", uri, bytes.NewBuffer(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "multipart/form-data; boundary="+randString(60))
+	req.Header.Set("Server-Password", config.ServerPassword)
+	return req, nil
+}
+
+func randString(n int) string {
+	const alphanum = "0123456789abcdef"
+	var bytes = make([]byte, n)
+	rand.Read(bytes)
+	for i, b := range bytes {
+		bytes[i] = alphanum[b%byte(len(alphanum))]
+	}
+	return string(bytes)
 }
